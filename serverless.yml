@@ -1,0 +1,171 @@
+service:
+  name: osushity-backend
+
+frameworkVersion: ">=1.51.0 <2.0.0"
+
+provider:
+  name: aws
+  runtime: python3.7
+  stage: ${opt:stage, 'dev'}
+  region: ap-northeast-1
+  logs:
+    restApi: true
+  environment:
+    BUCKET_NAME_DATA: ${self:custom.resourceNamePrefix}-data
+    TABLE_NAME_SUSHI_CHAINS: ${self:custom.resourceNamePrefix}-sushi_chains
+
+package:
+  exclude:
+    - .venv/**
+    - .vscode/**
+    - node_modules/**
+    - package-lock.json
+    - package.json
+    - Pipfile
+    - Pipfile.lock
+
+functions:
+  # endpoints
+  ListSushiChains:
+    handler: src.handlers.endpoints.list_sushi_chains.handler
+    layers:
+      - { Ref: PythonRequirementsLambdaLayer }
+    events:
+      - http:
+          path: /api/sushiChains
+          method: get
+          cors: ${self:custom.corsConfiguration}
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - dynamodb:Scan
+          - dynamodb:Query
+        Resource: "arn:aws:dynamodb:#{AWS::Region}:#{AWS::AccountId}:table/${self:provider.environment.TABLE_NAME_SUSHI_CHAINS}"
+  ListAllergyinformation:
+    handler: src.handlers.endpoints.list_allergy_information.handler
+    layers:
+      - { Ref: PythonRequirementsLambdaLayer }
+    events:
+      - http:
+          path: /api/sushiChains/{sushiChainId}/allergyInformation
+          method: get
+          cors: ${self:custom.corsConfiguration}
+          request:
+            parameters:
+              paths:
+                sushiChainId: true
+              querystrings:
+                excludeAllergens: false
+                excludesMayContain: false
+                menuNameLike: false
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - s3:Get*
+          - s3:List*
+        Resource:
+          - "arn:aws:s3:::${self:provider.environment.BUCKET_NAME_DATA}"
+          - "arn:aws:s3:::${self:provider.environment.BUCKET_NAME_DATA}/*"
+
+  # Workers
+  CollectSushiroAllergyInfo:
+    handler: src.handlers.workers.collect_allergy_information.handler
+    memorySize: 1024
+    timeout: 60
+    layers:
+      - { Ref: PythonRequirementsLambdaLayer }
+    events:
+      - schedule: cron(55 0 * * ? *) # Run everyday at 9:55(jst)
+    environment:
+      SUSHI_CHAIN_ID: sushiro
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - s3:PutObject
+        Resource: "arn:aws:s3:::${self:provider.environment.BUCKET_NAME_DATA}/*"
+      - Effect: "Allow"
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+        Resource: "arn:aws:dynamodb:#{AWS::Region}:#{AWS::AccountId}:table/${self:provider.environment.TABLE_NAME_SUSHI_CHAINS}"
+
+  CollectKuraAllergyInfo:
+    handler: src.handlers.workers.collect_allergy_information.handler
+    memorySize: 1024
+    timeout: 60
+    layers:
+      - { Ref: PythonRequirementsLambdaLayer }
+    events:
+      - schedule: cron(55 0 * * ? *) # Run everyday at 9:55(jst)
+    environment:
+      SUSHI_CHAIN_ID: kura
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - s3:PutObject
+        Resource: "arn:aws:s3:::${self:provider.environment.BUCKET_NAME_DATA}/*"
+      - Effect: "Allow"
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+        Resource: "arn:aws:dynamodb:#{AWS::Region}:#{AWS::AccountId}:table/${self:provider.environment.TABLE_NAME_SUSHI_CHAINS}"
+
+  NotifyUpdate:
+    handler: src.handlers.workers.notify_update.handler
+    memorySize: 128
+    timeout: 60
+    layers:
+      - { Ref: PythonRequirementsLambdaLayer }
+    events:
+      - s3:
+          bucket: ${self:provider.environment.BUCKET_NAME_DATA}
+          event: s3:ObjectCreated:*
+          rules:
+            - suffix: .json
+          existing: true
+    environment:
+      SLACK_WEBHOOK_URL: ${env:SLACK_WEBHOOK_URL}
+
+resources:
+  Resources:
+    DataBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.BUCKET_NAME_DATA}
+        VersioningConfiguration:
+          Status: Enabled
+    SushiChains:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TABLE_NAME_SUSHI_CHAINS}
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+
+custom:
+  resourceNamePrefix: ${self:service.name}-${self:provider.stage}
+  pythonRequirements:
+    usePipenv: true
+    dockerizePip: true
+    layer: true
+  corsConfiguration:
+    origin: http://localhost:3000
+    headers:
+      - Content-Type
+      - X-Amz-Date
+      - Authorization
+      - X-Api-Key
+      - X-Amz-Security-Token
+      - X-Amz-User-Agent
+    allowCredentials: true
+
+plugins:
+  - serverless-python-requirements
+  - serverless-iam-roles-per-function
+  - serverless-pseudo-parameters
