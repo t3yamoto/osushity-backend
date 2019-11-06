@@ -26,4 +26,4 @@ jobs:
       - name: Install Pipenv
         run: pip install pipenv
       - name: Build
-        run: node_modules/.bin/sls build
+        run: node_modules/.bin/sls package -v
