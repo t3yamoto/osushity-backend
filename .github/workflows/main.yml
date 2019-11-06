@@ -25,4 +25,5 @@ jobs:
           architecture: 'x64'
       - name: Install Pipenv
         run: pip install pipenv
-      - run: pwd
+      - name: Build
+        run: node_modules/.bin/sls build
